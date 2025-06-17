@@ -35,6 +35,6 @@ for file in os.listdir(input_folder):
         print(f"✅ Model Accuracy: {acc:.2f}")
 
         # Save model with matching name
-        model_name = file.replace('.csv', '').lower() + '_rf_model.pkl'
+        model_name = file.replace('_data.csv', '').lower() + '_rf_model.pkl'
         joblib.dump(model, os.path.join(model_folder, model_name))
         print(f"📦 Model saved as {model_name}")
