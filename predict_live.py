@@ -1,72 +1,66 @@
 import yfinance as yf
 import pandas as pd
-import ta
 import joblib
-from datetime import datetime
+from ta.momentum import RSIIndicator
+from ta.trend import MACD, SMAIndicator
 from plyer import notification
 import os
 
-# ---------------------------
-# ✅ Choose your stock ticker
-# ---------------------------
-ticker = 'HDFCBANK.NS'  # e.g., RELIANCE.NS, ^NSEI
+# Helper to extract indicators
+def add_indicators(df):
+    close = df['Close'].squeeze()
+    df['RSI'] = RSIIndicator(close=close).rsi()
+    df['MACD'] = MACD(close=close).macd()
+    df['SMA_50'] = SMAIndicator(close=close, window=50).sma_indicator()
 
-# Generate matching model file name
-model_file = f"models/{ticker.replace('^', '').replace('.', '').lower()}_rf_model.pkl"
-
-# Check model exists
-if not os.path.exists(model_file):
-    print(f"❌ Model file not found: {model_file}")
-    exit()
-
-# Load model
-model = joblib.load(model_file)
-print(f"✅ Loaded model: {model_file}")
-
-# Fetch latest stock data
-print(f"📥 Fetching data for {ticker}...")
-df = yf.download(ticker, period="30d", interval="1h")
-if isinstance(df.columns, pd.MultiIndex):
-    df.columns = df.columns.droplevel(1)
-
-# Clean up columns
-df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
-df.dropna(inplace=True)
-
-# Add indicators
-close_series = df['Close'].squeeze()  # Ensures it's a 1D Series
-df['RSI'] = ta.momentum.RSIIndicator(close=close_series).rsi()
-df['MACD'] = ta.trend.MACD(close=close_series).macd()
-df['SMA_50'] = ta.trend.SMAIndicator(close=close_series, window=50).sma_indicator()
+    print(f"🔍 Rows before dropna: {len(df)}")
+    df.dropna(inplace=True)
+    print(f"✅ Rows after dropna: {len(df)}")
+    return df
 
 
-# Drop NaNs created by indicators
-df.dropna(inplace=True)
-print(df.tail())  # Check what the last few rows look like
+# List of tickers and corresponding model names
+tickers = {
+    "HDFCBANK.NS": "hdfcbankns_rf_model.pkl",
+    "RELIANCE.NS": "reliancens_rf_model.pkl",
+    "^NSEI": "nsei_rf_model.pkl",
+    "^NSEBANK": "nsebank_rf_model.pkl"
+}
 
-if df.empty:
-    print("❌ No data available after preprocessing. Please check the stock symbol or data format.")
-    exit()
+# Run once for all tickers
+for symbol, model_name in tickers.items():
+    print(f"\n📥 Fetching data for {symbol}...")
+    try:
+        df = yf.download(symbol, period="3mo", interval="1d", progress=False)
 
+        if df.empty:
+            print(f"❌ No data available for {symbol}")
+            continue
 
-# Get latest row
-latest = df.iloc[-1]
-features = latest[['RSI', 'MACD', 'SMA_50']].values.reshape(1, -1)
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+        df = add_indicators(df)
 
-# Predict
-prediction = model.predict(features)[0]
-result = "📈 BUY" if prediction == 1 else "📉 SELL/HOLD"
+        if df.empty:
+            print(f"❌ No data available after indicators for {symbol}")
+            continue
 
-# Output
-print(f"\n🔍 Prediction for {ticker}")
-print(f"Time: {latest.name}")
-print(f"Close Price: ₹{latest['Close']:.2f}")
-print(f"Model Suggests: {result}")
+        model_path = os.path.join("models", model_name)
+        if not os.path.exists(model_path):
+            print(f"❌ Model not found: {model_path}")
+            continue
 
-# Notify
-notification.notify(
-    title=f"Stock Signal: {ticker}",
-    message=f"{result} at ₹{latest['Close']:.2f} ({latest.name})",
-    app_name="Stock Predictor",
-    timeout=10
-)
+        model = joblib.load(model_path)
+        latest = df.iloc[-1]
+        X = latest[['RSI', 'MACD', 'SMA_50']].values.reshape(1, -1)
+        prediction = model.predict(X)[0]
+        action = "📈 BUY" if prediction == 1 else "📉 SELL"
+
+        print(f"🔮 {symbol} Prediction: {action}")
+        notification.notify(
+            title=f"📊 {symbol} Stock Signal",
+            message=f"Action: {action}",
+            timeout=10
+        )
+
+    except Exception as e:
+        print(f"❌ Error processing {symbol}: {e}")
