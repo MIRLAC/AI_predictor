@@ -30,7 +30,7 @@ for symbol, model_file in stocks.items():
     print(f"\n📥 Fetching data for {symbol}...")
 
     try:
-        df = yf.download(symbol, period="3mo", interval="1d", auto_adjust=True)
+        df = yf.download(symbol, period="1d", interval="5m", auto_adjust=True)
         if df.empty:
             print(f"❌ No data available for {symbol}")
             continue
