@@ -42,7 +42,7 @@ for symbol, model_file in stocks.items():
             print("❌ Not enough data after indicators.")
             continue
 
-        latest = df[['RSI', 'MACD', 'SMA_20']].iloc[-1:]
+        latest = df[['RSI', 'MACD', 'SMA_20']].iloc[[-1]]
         current_price = float(df['Close'].iloc[-1].item())
         print(f"💰 Current price: {current_price:.2f}")
 
