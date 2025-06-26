@@ -4,6 +4,9 @@ from ta.trend import MACD, SMAIndicator
 import pandas as pd
 import joblib
 from datetime import datetime, timedelta
+import time
+import os
+import numpy as np
 
 # ==== Your SmartAPI credentials ====
 api_key = "IbvVzG5v"
@@ -14,7 +17,7 @@ totp_secret = "CGPGDARIZ6EE2C555AR2RZDZ2Q"
 # ==== Start session ====
 smartapi = create_session(api_key, client_id, client_pwd, totp_secret)
 
-# ==== Define symbol tokens ====
+# ==== Define symbols and models ====
 symbols = {
     'RELIANCE-EQ': {
         'symbol_token': '2885',
@@ -38,50 +41,80 @@ symbols = {
     }
 }
 
+# ==== Predict ====
 for scrip, meta in symbols.items():
     try:
         print(f"\n📥 Fetching data for {scrip}")
 
         now = datetime.now()
-        earlier = now - timedelta(hours=1)
+        # Always align to the last completed candle (nearest past 5-min mark)
+        now = now - timedelta(minutes=now.minute % 5, seconds=now.second, microseconds=now.microsecond)
+        fromdate = (now - timedelta(days=2)).strftime("%Y-%m-%d %H:%M")
+        todate = now.strftime("%Y-%m-%d %H:%M")
 
-        candles = smartapi.getCandleData(
-            exchange=meta['exchange'],
-            symboltoken=meta['symbol_token'],
-            interval="FIVE_MINUTE",
-            fromdate=earlier.strftime("%Y-%m-%d %H:%M"),
-            todate=now.strftime("%Y-%m-%d %H:%M")
-        )
+        params = {
+            "exchange": meta["exchange"],
+            "symboltoken": meta["symbol_token"],
+            "interval": "FIVE_MINUTE",
+            "fromdate": fromdate,
+            "todate": todate
+        }
 
-        if not candles.get('data'):
-            print(f"❌ No candle data received for {scrip}")
+        for attempt in range(3):
+            try:
+                candles = smartapi.getCandleData(params)
+                if candles.get("data"):
+                    break
+                else:
+                    raise Exception("Empty candle data.")
+            except Exception as e:
+                print(f"⚠️ Attempt {attempt+1}: Failed to fetch candles for {scrip}. Retrying in 5s...")
+                time.sleep(5)
+        else:
+            print(f"❌ Failed to fetch candle data for {scrip} after 3 attempts.")
             continue
 
+        # Convert to DataFrame
         df = pd.DataFrame(candles['data'], columns=[
             'timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['datetime'] = pd.to_datetime(df['timestamp'])
         df.set_index('datetime', inplace=True)
         df.rename(columns={'close': 'Close'}, inplace=True)
 
+        print(f"📊 Raw candles fetched for {scrip}: {df.shape[0]}")
+        
+        # Add indicators
         df['RSI'] = RSIIndicator(df['Close']).rsi()
         df['MACD'] = MACD(df['Close']).macd_diff()
         df['SMA_20'] = SMAIndicator(df['Close'], window=20).sma_indicator()
         df.dropna(inplace=True)
 
-        if df.empty:
+        if df.empty or len(df) < 1:
             print("❌ Not enough data after indicators.")
             continue
 
-        latest = df[['RSI', 'MACD', 'SMA_20']].iloc[[-1]]
-        current_price = df['Close'].iloc[-1]
+        # Use the latest completed candle for prediction
+        latest = df.iloc[-1]
+        latest_features = latest[['RSI', 'MACD', 'SMA_20']].values.reshape(1, -1)
+        current_price = latest['Close']
+        predict_for = df.index[-1] + pd.Timedelta(minutes=5)
 
-        model = joblib.load(f"models/{meta['model']}")
-        prediction = model.predict(latest)[0]
+        # Load model
+        model_path = f"models/{meta['model']}"
+        if not os.path.exists(model_path):
+            print(f"❌ Model not found: {model_path}")
+            continue
 
-        print(f"💰 Current: ₹{current_price:.2f} | Prediction: ₹{prediction:.2f}")
-        diff = prediction - current_price
+        model = joblib.load(model_path)
+        predicted_price = float(model.predict(latest_features)[0])
 
-        if diff > 0.5:
+        # Output
+        print(f"🕒 Prediction Time: {predict_for.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"💰 Current Price: ₹{current_price:.2f}")
+        print(f"🔮 Predicted Price: ₹{predicted_price:.2f}")
+
+        diff = predicted_price - current_price
+        if diff > 1.0:
             print("📈 Recommendation: BUY")
         elif diff < -0.5:
             print("📉 Recommendation: SELL")
@@ -90,4 +123,4 @@ for scrip, meta in symbols.items():
 
     except Exception as e:
         print(f"❌ Error for {scrip}: {e}")
-
+    time.sleep(2)
