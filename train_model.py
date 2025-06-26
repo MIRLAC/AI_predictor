@@ -1,48 +1,71 @@
-import pandas as pd
 import os
-from sklearn.ensemble import RandomForestRegressor
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, r2_score
+import tensorflow as tf
 import joblib
 
-input_folder = 'processed'
-model_folder = 'models'
-os.makedirs(model_folder, exist_ok=True)
+# Parameters
+SEQ_LEN = 50  # Use last 50 candles to predict next one
+EPOCHS = 10
+BATCH_SIZE = 32
 
-for file in os.listdir(input_folder):
-    if file.endswith('.csv'):
-        print(f"\n📈 Training for {file}...")
-        filepath = os.path.join(input_folder, file)
-        df = pd.read_csv(filepath, index_col=0, parse_dates=True)
+def load_and_preprocess(csv_file):
+    df = pd.read_csv(csv_file, parse_dates=True, index_col=0)
 
-        # Label: Predict next day's close price
-        df['Target'] = df['Close'].shift(-1)
-        df.dropna(inplace=True)
+    # Use Close only or more features if needed
+    features = df[['Close']].values
 
-        # Features
-        X = df[['RSI', 'MACD', 'SMA_50']]
-        y = df['Target'].squeeze()  # Ensures it's 1D
+    # Normalize
+    scaler = MinMaxScaler()
+    scaled = scaler.fit_transform(features)
 
+    # Build sequences
+    X, y = [], []
+    for i in range(SEQ_LEN, len(scaled)):
+        X.append(scaled[i - SEQ_LEN:i])
+        y.append(scaled[i][0])  # Predict next close
 
+    X, y = np.array(X), np.array(y)
+    return X, y, scaler
 
-        # Train-test split
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42
-        )
+def build_model():
+    model = tf.keras.Sequential([
+        tf.keras.layers.LSTM(64, return_sequences=True, input_shape=(SEQ_LEN, 1)),
+        tf.keras.layers.Dropout(0.2),
+        tf.keras.layers.LSTM(32),
+        tf.keras.layers.Dropout(0.2),
+        tf.keras.layers.Dense(1)
+    ])
+    model.compile(optimizer='adam', loss='mean_squared_error')
+    return model
 
-        # Regression Model
-        model = RandomForestRegressor(n_estimators=100, random_state=42)
-        model.fit(X_train, y_train)
+def train_model(csv_file, model_path, scaler_path):
+    X, y, scaler = load_and_preprocess(csv_file)
 
-        # Predict and evaluate
-        y_pred = model.predict(X_test)
-        mse = mean_squared_error(y_test, y_pred)
-        r2 = r2_score(y_test, y_pred)
+    # Split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, shuffle=False
+    )
 
-        print(f"📊 Mean Squared Error: {mse:.2f}")
-        print(f"✅ R² Score: {r2:.2f}")
+    model = build_model()
+    model.fit(X_train, y_train, validation_data=(X_test, y_test), epochs=EPOCHS, batch_size=BATCH_SIZE)
 
-        # Save model with matching name
-        model_name = file.replace('_data.csv', '').lower() + '_rf_model.pkl'
-        joblib.dump(model, os.path.join(model_folder, model_name))
-        print(f"📦 Model saved as {model_name}")
+    # Save model and scaler
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+    model.save(model_path)
+    joblib.dump(scaler, scaler_path)
+    print(f"✅ Saved model to {model_path} and scaler to {scaler_path}")
+
+# Train all 4 models
+stock_files = {
+    "RELIANCE": "processed/RELIANCENS_data.csv",
+    "HDFCBANK": "processed/HDFCBANKNS_data.csv",
+    "NIFTY": "processed/NSEI_data.csv",
+    "BANKNIFTY": "processed/NSEBANK_data.csv",
+}
+
+for name, path in stock_files.items():
+    print(f"\n🚀 Training model for {name}")
+    train_model(path, f"models/{name}_lstm.h5", f"models/{name}_scaler.pkl")
